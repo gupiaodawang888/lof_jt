@@ -362,7 +362,8 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💡 使用说明")
     st.sidebar.markdown("⚠️ **注意**：由于无法获取真实的申购状态和限额，所以移除了这些字段。🍗 鸡腿机会只根据溢价率判断。")
-    
+    st.sidebar.markdown("🍗 **什么是鸡腿机会**：我爱吃鸡腿，一般有套利机会的LOF基金一般都限购100，套利赚取的钱刚好加个鸡腿。如果你爱喝奶茶，那么可以叫奶茶机会")
+
     # 刷新按钮
     col1, col2 = st.columns([1, 5])
     with col1:
@@ -399,6 +400,9 @@ def main():
     # 计算预估利润
     fee = 0 if is_free_five else 5
     profit_col_name = '预估利润' if is_free_five else '预估利润(扣5元)'
+    # 添加申购金额列（放在预估利润前）
+    filtered_df['申购金额'] = invest_amount
+    df['申购金额'] = invest_amount
     filtered_df[profit_col_name] = (invest_amount * filtered_df['溢价率(%)'] / 100 - fee).round(2)
     df[profit_col_name] = (invest_amount * df['溢价率(%)'] / 100 - fee).round(2)
     
