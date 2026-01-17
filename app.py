@@ -371,6 +371,14 @@ def main():
         step=10,
         help="过滤流动性较差的品种"
     )
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("🎨 显示设置")
+    use_highlight_mode = st.sidebar.checkbox(
+        "溢价率高亮模式",
+        value=True,
+        help="选中：按溢价率显示颜色高亮（红/黄/灰）。取消：显示可点击的场内行情/场外详情链接。"
+    )
     
     st.sidebar.markdown("---")
     st.sidebar.header("🛡️ 账户设置")
@@ -393,7 +401,7 @@ def main():
     st.sidebar.markdown("### 💡 使用说明")
     with st.sidebar.expander("⏰ 关于净值时效性（重要）"):
         st.markdown("""
-**场外净值 vs 场内价格**
+**场外净值 && 场内价格**
 
 - **场外净值**：基金公司在 **T日收盘后** 根据持仓市值计算，通常在 **18:00-22:00** 公布
 - **场内价格**：交易所实时价格，随市场波动
@@ -409,8 +417,6 @@ def main():
         """)
     st.sidebar.markdown("⚠️ **注意**：由于无法获取真实的申购状态和限额，所以移除了这些字段。🍗 鸡腿机会只根据溢价率判断。")
     st.sidebar.markdown("🍗 **什么是鸡腿机会**：我爱吃鸡腿，一般有套利机会的LOF基金一般都限购100，套利赚取的钱刚好加个鸡腿。如果你爱喝奶茶，那么可以叫奶茶机会")
-    
-
 
     # 刷新按钮
     col1, col2 = st.columns([1, 5])
@@ -454,6 +460,20 @@ def main():
     filtered_df[profit_col_name] = (invest_amount * filtered_df['溢价率(%)'] / 100 - fee).round(2)
     df[profit_col_name] = (invest_amount * df['溢价率(%)'] / 100 - fee).round(2)
     
+    # 添加链接列
+    filtered_df['场内行情'] = filtered_df['基金代码'].apply(
+        lambda x: f"https://so.eastmoney.com/web/s?keyword={x}"
+    )
+    filtered_df['场外详情'] = filtered_df['基金代码'].apply(
+        lambda x: f"https://danjuanfunds.com/funding/{x}"
+    )
+    df['场内行情'] = df['基金代码'].apply(
+        lambda x: f"https://so.eastmoney.com/web/s?keyword={x}"
+    )
+    df['场外详情'] = df['基金代码'].apply(
+        lambda x: f"https://danjuanfunds.com/funding/{x}"
+    )
+    
     # 按溢价率降序排序
     filtered_df = filtered_df.sort_values('溢价率(%)', ascending=False)
     
@@ -489,21 +509,46 @@ def main():
         if len(filtered_df) > 0:
             st.markdown("🟥 **红色** = 高溢价(≥5%) | 🟡 **黄色** = 中等溢价(2-5%)")
             
-            # 对数据应用溢价率分级高亮
-            styled_df = filtered_df.style.apply(highlight_premium_level, axis=1)
-            
-            # 格式化特定列的显示
-            format_dict = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
-            
-            styled_df = styled_df.format(format_dict)
-            
-            # 显示表格
-            st.dataframe(
-                styled_df,
-                width='stretch',
-                height=600,
-                hide_index=True
-            )
+            if use_highlight_mode:
+                # 高亮模式：使用 Styler 显示颜色
+                display_cols = [col for col in filtered_df.columns if col not in ['场内行情', '场外详情']]
+                styled_df = filtered_df[display_cols].style.apply(highlight_premium_level, axis=1)
+                format_dict = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
+                styled_df = styled_df.format(format_dict)
+                st.dataframe(
+                    styled_df,
+                    width='stretch',
+                    height=600,
+                    hide_index=True
+                )
+            else:
+                # 链接模式：显示可点击链接
+                st.dataframe(
+                    filtered_df,
+                    width='stretch',
+                    height=600,
+                    hide_index=True,
+                    column_config={
+                        '场内行情': st.column_config.LinkColumn(
+                            '场内行情',
+                            help='点击跳转到东方财富查看场内行情',
+                            display_text='📈 查看'
+                        ),
+                        '场外详情': st.column_config.LinkColumn(
+                            '场外详情',
+                            help='点击跳转到蛋卷基金查看场外净值详情',
+                            display_text='📊 查看'
+                        ),
+                        '场内成交额': st.column_config.NumberColumn(
+                            '场内成交额',
+                            format='%.2f 元'
+                        ),
+                        profit_col_name: st.column_config.NumberColumn(
+                            profit_col_name,
+                            format='￥%.2f'
+                        )
+                    }
+                )
             
             # 导出功能
             st.markdown("---")
@@ -532,21 +577,46 @@ def main():
         # 对全量数据按溢价率排序（无效数据排在最后）
         df_sorted = df.sort_values(['数据状态', '溢价率(%)'], ascending=[True, False])
         
-        # 应用高亮（使用支持无效数据标记的函数）
-        styled_all_df = df_sorted.style.apply(highlight_with_invalid, axis=1)
-        
-        # 格式化显示
-        format_dict_all = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
-        
-        styled_all_df = styled_all_df.format(format_dict_all)
-        
-        # 显示全量表格
-        st.dataframe(
-            styled_all_df,
-            width='stretch',
-            height=600,
-            hide_index=True
-        )
+        if use_highlight_mode:
+            # 高亮模式：使用 Styler 显示颜色
+            display_cols = [col for col in df_sorted.columns if col not in ['场内行情', '场外详情']]
+            styled_all_df = df_sorted[display_cols].style.apply(highlight_with_invalid, axis=1)
+            format_dict_all = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
+            styled_all_df = styled_all_df.format(format_dict_all)
+            st.dataframe(
+                styled_all_df,
+                width='stretch',
+                height=600,
+                hide_index=True
+            )
+        else:
+            # 链接模式：显示可点击链接
+            st.dataframe(
+                df_sorted,
+                width='stretch',
+                height=600,
+                hide_index=True,
+                column_config={
+                    '场内行情': st.column_config.LinkColumn(
+                        '场内行情',
+                        help='点击跳转到东方财富查看场内行情',
+                        display_text='📈 查看'
+                    ),
+                    '场外详情': st.column_config.LinkColumn(
+                        '场外详情',
+                        help='点击跳转到蛋卷基金查看场外净值详情',
+                        display_text='📊 查看'
+                    ),
+                    '场内成交额': st.column_config.NumberColumn(
+                        '场内成交额',
+                        format='%.2f 元'
+                    ),
+                    profit_col_name: st.column_config.NumberColumn(
+                        profit_col_name,
+                        format='￥%.2f'
+                    )
+                }
+            )
         
         # 导出全量数据
         st.markdown("---")
