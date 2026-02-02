@@ -12,6 +12,7 @@ import warnings
 import logging
 import json
 import os
+import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from http.client import RemoteDisconnected
@@ -268,6 +269,66 @@ def fetch_single_nav(fund_code, start_date, end_date):
         return {'基金代码': fund_code, 'success': False, 'error': str(e)}
 
 
+def save_market_cache(df):
+    """保存场内行情缓存"""
+    try:
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cache_file = os.path.join(CACHE_DIR, f"market_cache_{current_time}.json")
+        
+        # 转换为字典列表保存
+        data = df.to_dict(orient='records')
+        
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"✅ 场内行情已缓存: {cache_file}")
+    except Exception as e:
+        logger.error(f"❌ 保存场内行情缓存失败: {str(e)}")
+
+
+def load_latest_market_cache():
+    """加载今日最新的场内行情缓存"""
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        # 查找今日的所有缓存文件
+        pattern = os.path.join(CACHE_DIR, f"market_cache_{today}_*.json")
+        files = glob.glob(pattern)
+        
+        if not files:
+            return None, None
+        
+        # 按修改时间排序，取最新的
+        latest_file = max(files, key=os.path.getctime)
+        
+        with open(latest_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+        df = pd.DataFrame(data)
+        logger.info(f"✅ 已加载最新缓存文件: {latest_file}")
+        
+        # 从文件名提取时间
+        # 文件名格式: market_cache_YYYYMMDD_HHMMSS.json
+        filename = os.path.basename(latest_file)
+        time_str = filename.replace("market_cache_", "").replace(".json", "")
+        # 格式化为人可读的时间
+        readable_time = f"{time_str[:4]}-{time_str[4:6]}-{time_str[6:8]} {time_str[9:11]}:{time_str[11:13]}:{time_str[13:]}"
+        
+        return df, readable_time
+    except Exception as e:
+        logger.error(f"❌ 读取场内行情缓存失败: {str(e)}")
+        return None, None
+
+
+def get_query_count():
+    """获取今日查询次数"""
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        pattern = os.path.join(CACHE_DIR, f"market_cache_{today}_*.json")
+        files = glob.glob(pattern)
+        return len(files)
+    except:
+        return 0
+
+
 def get_lof_data():
     """获取 LOF 基金实时数据"""
     if not AKSHARE_AVAILABLE:
@@ -277,38 +338,68 @@ def get_lof_data():
     
     try:
         # ========== 步骤 1：获取LOF场内行情列表 ==========
+        
+        # 检查今日查询次数
+        query_count = get_query_count()
+        QUERY_THRESHOLD = 10
+        if query_count >= QUERY_THRESHOLD:
+            st.warning(f"⚠️ 今日已查询 {query_count} 次（阈值 {QUERY_THRESHOLD} 次）。频繁查询可能导致 IP 被封，请谨慎刷新。", icon="⚠️")
+        
         logger.info("🔍 [步骤1/3] 开始调用 Akshare API: fund_lof_spot_em() - 获取 LOF 场内行情")
         
-        df_market = call_akshare_with_retry(ak.fund_lof_spot_em, max_retries=3, base_delay=2)
+        df_market = None
+        using_cache = False
+        cache_time = ""
+        
+        try:
+            # 尝试获取实时数据
+            df_market = call_akshare_with_retry(ak.fund_lof_spot_em, max_retries=3, base_delay=2)
+            
+            # 数据校验
+            required_columns = ['代码', '名称', '最新价', '成交额']
+            missing_columns = [col for col in required_columns if col not in df_market.columns]
+            
+            if missing_columns:
+                raise ValueError(f"返回数据缺少必需列: {missing_columns}")
+            
+            # 成功获取数据，保存缓存
+            # 先进行重命名和处理，然后再缓存，这样缓存的数据结构统一
+            df_market = df_market.rename(columns={
+                '代码': '基金代码',
+                '名称': '基金名称',
+                '最新价': '场内价格',
+                '成交额': '场内成交额'
+            })
+            
+            df_market['场内价格'] = pd.to_numeric(df_market['场内价格'], errors='coerce')
+            df_market['场内成交额'] = pd.to_numeric(df_market['场内成交额'], errors='coerce')
+            df_market = df_market[['基金代码', '基金名称', '场内价格', '场内成交额']]
+            
+            save_market_cache(df_market)
+            
+        except Exception as e:
+            logger.warning(f"⚠️ 获取实时数据失败，尝试读取缓存: {str(e)}")
+            # 获取失败，尝试读取缓存
+            df_market, cache_time = load_latest_market_cache()
+            
+            if df_market is not None:
+                using_cache = True
+                st.warning(f"⚠️ 无法获取实时场内行情（可能是IP被封或接口异常），正在使用缓存数据。\n📅 缓存时间: {cache_time}", icon="🕒")
+                logger.info(f"✅ 使用缓存数据，时间: {cache_time}")
+            else:
+                # 既没实时数据，也没缓存
+                logger.error("❌ 无法获取数据且无可用缓存")
+                st.error(f"❌ 获取数据失败且无本地缓存: {str(e)}")
+                return None
+
+        if df_market is None:
+             return None
         
         logger.info(f"📊 场内行情数据行数: {len(df_market)}")
-        logger.info(f"📋 场内行情列名: {df_market.columns.tolist()}")
-        logger.info(f"\n📄 前 3 条原始数据:\n{df_market.head(3).to_string()}")
         
-        # 检查必需的列
-        required_columns = ['代码', '名称', '最新价', '成交额']
-        missing_columns = [col for col in required_columns if col not in df_market.columns]
+        # 如果是读取的缓存，数据已经是处理过的，不需要再次处理
+        # 如果是实时获取的，上面已经处理过了
         
-        if missing_columns:
-            error_msg = f"场内行情数据缺少必需列: {missing_columns}"
-            logger.error(f"❌ {error_msg}")
-            st.error(f"❌ {error_msg}")
-            return None
-        
-        # 重命名列
-        df_market = df_market.rename(columns={
-            '代码': '基金代码',
-            '名称': '基金名称',
-            '最新价': '场内价格',
-            '成交额': '场内成交额'
-        })
-        
-        # 数据类型转换
-        df_market['场内价格'] = pd.to_numeric(df_market['场内价格'], errors='coerce')
-        df_market['场内成交额'] = pd.to_numeric(df_market['场内成交额'], errors='coerce')
-        
-        # 只保留需要的列
-        df_market = df_market[['基金代码', '基金名称', '场内价格', '场内成交额']]
         logger.info(f"✅ 场内行情处理完成，共 {len(df_market)} 只 LOF")
         
         
