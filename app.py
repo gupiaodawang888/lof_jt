@@ -329,6 +329,73 @@ def get_query_count():
         return 0
 
 
+def get_fund_lof_spot_em_custom():
+    """
+    自定义请求东方财富 LOF 场内行情（替代 ak.fund_lof_spot_em，解决特定 push2 节点挂掉导致 Connection aborted 错误）
+    增加多节点降级重试机制，防止单点故障
+    """
+    nodes = [
+        "http://push2.eastmoney.com",
+        "https://push2.eastmoney.com",
+        "http://82.push2.eastmoney.com",
+        "http://11.push2.eastmoney.com"
+    ]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
+    params = {
+        "pn": "1", "pz": "5000", "po": "1", "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2", "invt": "2", "wbp2u": "|0|0|0|web",
+        "fid": "f3", "fs": "b:MK0404",
+        "fields": "f12,f14,f2,f6"
+    }
+    
+    last_error = None
+    data = None
+    
+    for node in nodes:
+        url = f"{node}/api/qt/clist/get"
+        try:
+            logger.info(f"🔄 尝试从节点获取行情: {node}")
+            resp = requests.get(url, params=params, headers=headers, timeout=5)
+            # 这里检查一下状态码
+            if resp.status_code != 200:
+                raise ValueError(f"HTTP Status {resp.status_code}")
+                
+            data = resp.json()
+            if data and "data" in data and data["data"] and "diff" in data["data"]:
+                logger.info(f"✅ 节点 {node} 获取成功！")
+                break
+            else:
+                raise ValueError("JSON格式不符预期")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"⚠️ 节点 {node} 访问失败: {e}，将尝试下一个节点")
+            data = None # 重置
+            continue
+            
+    if data is None or "data" not in data or not data["data"] or "diff" not in data["data"]:
+        raise ValueError(f"🚨 所有东方财富备用节点均无法访问或返回异常结构。最后错误: {last_error}")
+        
+    items = data["data"]["diff"]
+    
+    parsed_data = []
+    for item in items:
+        parsed_data.append({
+            "代码": str(item.get("f12", "")),
+            "名称": item.get("f14", ""),
+            "最新价": item.get("f2", None),
+            "成交额": item.get("f6", None)
+        })
+        
+    df = pd.DataFrame(parsed_data)
+    df['最新价'] = pd.to_numeric(df['最新价'].replace('-', None), errors='coerce')
+    df['成交额'] = pd.to_numeric(df['成交额'].replace('-', None), errors='coerce')
+    return df
+
+
 def get_lof_data():
     """获取 LOF 基金实时数据"""
     if not AKSHARE_AVAILABLE:
@@ -352,8 +419,8 @@ def get_lof_data():
         cache_time = ""
         
         try:
-            # 尝试获取实时数据
-            df_market = call_akshare_with_retry(ak.fund_lof_spot_em, max_retries=3, base_delay=2)
+            # 尝试获取实时数据，使用自定义函数替代可能失效的 ak.fund_lof_spot_em
+            df_market = call_akshare_with_retry(get_fund_lof_spot_em_custom, max_retries=3, base_delay=2)
             
             # 数据校验
             required_columns = ['代码', '名称', '最新价', '成交额']
