@@ -228,6 +228,8 @@ def clean_old_cache_files(cache_dir, days=30):
                         
         if deleted_count > 0:
             logger.info(f"🗑️ 缓存清理：成功删除了 {deleted_count} 个距今 >= {days} 天的历史缓存文件")
+        if deleted_count == 0:
+            logger.info(f"🗑️ 缓存清理： 距今 >= {days} 天的历史缓存文件未找到，无需删除")
             
     except Exception as e:
         logger.warning(f"⚠️ 清理过期缓存文件失败: {str(e)}")
