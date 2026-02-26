@@ -207,6 +207,36 @@ if not os.path.exists(CACHE_DIR):
     logger.info(f"📁 创建缓存目录: {CACHE_DIR}")
 
 
+def clean_old_cache_files(cache_dir, days=30):
+    """
+    每次页面刷新时，检查并删除距今大于等于 30 天的缓存文件。
+    （Streamlit 云端服务会休眠，后台任务不靠谱，因此改为轻量级的前台触发模式）
+    """
+    try:
+        deleted_count = 0
+        current_ts = time.time()
+        thirty_days_sec = days * 24 * 3600
+        
+        if os.path.exists(cache_dir):
+            for filename in os.listdir(cache_dir):
+                if filename.endswith(".json") and (filename.startswith("nav_cache_") or filename.startswith("market_cache_")):
+                    file_path = os.path.join(cache_dir, filename)
+                    file_mtime = os.path.getmtime(file_path)
+                    if current_ts - file_mtime >= thirty_days_sec:
+                        os.remove(file_path)
+                        deleted_count += 1
+                        
+        if deleted_count > 0:
+            logger.info(f"🗑️ 缓存清理：成功删除了 {deleted_count} 个距今 >= {days} 天的历史缓存文件")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ 清理过期缓存文件失败: {str(e)}")
+
+# 每次有用户访问或刷新网页，顺手打扫一下卫生
+clean_old_cache_files(CACHE_DIR)
+
+
+
 def load_nav_cache(cache_date):
     """加载指定日期的净值缓存"""
     cache_file = os.path.join(CACHE_DIR, f"nav_cache_{cache_date}.json")
