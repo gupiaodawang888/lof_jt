@@ -207,6 +207,38 @@ if not os.path.exists(CACHE_DIR):
     logger.info(f"📁 创建缓存目录: {CACHE_DIR}")
 
 
+def clean_old_cache_files(cache_dir, days=30):
+    """
+    每次页面刷新时，检查并删除距今大于等于 30 天的缓存文件。
+    （Streamlit 云端服务会休眠，后台任务不靠谱，因此改为轻量级的前台触发模式）
+    """
+    try:
+        deleted_count = 0
+        current_ts = time.time()
+        thirty_days_sec = days * 24 * 3600
+        
+        if os.path.exists(cache_dir):
+            for filename in os.listdir(cache_dir):
+                if filename.endswith(".json") and (filename.startswith("nav_cache_") or filename.startswith("market_cache_")):
+                    file_path = os.path.join(cache_dir, filename)
+                    file_mtime = os.path.getmtime(file_path)
+                    if current_ts - file_mtime >= thirty_days_sec:
+                        os.remove(file_path)
+                        deleted_count += 1
+                        
+        if deleted_count > 0:
+            logger.info(f"🗑️ 缓存清理：成功删除了 {deleted_count} 个距今 >= {days} 天的历史缓存文件")
+        if deleted_count == 0:
+            logger.info(f"🗑️ 缓存清理： 距今 >= {days} 天的历史缓存文件未找到，无需删除")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ 清理过期缓存文件失败: {str(e)}")
+
+# 每次有用户访问或刷新网页，顺手打扫一下卫生
+clean_old_cache_files(CACHE_DIR)
+
+
+
 def load_nav_cache(cache_date):
     """加载指定日期的净值缓存"""
     cache_file = os.path.join(CACHE_DIR, f"nav_cache_{cache_date}.json")
@@ -332,8 +364,10 @@ def get_query_count():
 def get_fund_lof_spot_em_custom():
     """
     自定义请求东方财富 LOF 场内行情（替代 ak.fund_lof_spot_em，解决特定 push2 节点挂掉导致 Connection aborted 错误）
-    增加多节点降级重试机制，防止单点故障
+    增加多节点降级重试机制，防云端高延迟与单点故障
     """
+    import random
+    
     nodes = [
         "http://push2.eastmoney.com",
         "https://push2.eastmoney.com",
@@ -341,9 +375,22 @@ def get_fund_lof_spot_em_custom():
         "http://11.push2.eastmoney.com"
     ]
     
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    ]
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        "User-Agent": random.choice(user_agents),
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://quote.eastmoney.com/",
+        "Origin": "https://quote.eastmoney.com",
+        "Connection": "keep-alive"
     }
+    
     params = {
         "pn": "1", "pz": "5000", "po": "1", "np": "1",
         "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -359,8 +406,8 @@ def get_fund_lof_spot_em_custom():
         url = f"{node}/api/qt/clist/get"
         try:
             logger.info(f"🔄 尝试从节点获取行情: {node}")
-            resp = requests.get(url, params=params, headers=headers, timeout=5)
-            # 这里检查一下状态码
+            # 云端部署容易因为跨国网络抖动引发 timeout，将超时时间放宽至 10 秒
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
             if resp.status_code != 200:
                 raise ValueError(f"HTTP Status {resp.status_code}")
                 
@@ -373,7 +420,7 @@ def get_fund_lof_spot_em_custom():
         except Exception as e:
             last_error = e
             logger.warning(f"⚠️ 节点 {node} 访问失败: {e}，将尝试下一个节点")
-            data = None # 重置
+            data = None 
             continue
             
     if data is None or "data" not in data or not data["data"] or "diff" not in data["data"]:
